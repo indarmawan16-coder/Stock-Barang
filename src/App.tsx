@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
    PENGATURAN
    ===================================================================== */
 // Tempel URL Web App dari Google Apps Script (berakhiran /exec).
-// Dikosongkan = MODE LOKAL (memakai data awal dari Jubah.xlsx, disimpan di browser).
+// Dikosongkan = MODE LOKAL (data hanya disimpan di browser).
 const API_URL =
   "https://script.google.com/macros/s/AKfycbz_iBpTgH8J_z2WD_njQwu8f0LCt8yo3NJgp-TEuYAUVS13kQzwLArBexOr7tvXqMfRXA/exec";
 // Harus sama dengan CONFIG.TOKEN di Apps Script (kosongkan jika tidak dipakai).
@@ -14,33 +14,15 @@ const STORAGE_KEY = "stok-barang-v1";
 /* =====================================================================
    TIPE
    ===================================================================== */
-type SheetKey = "jubah" | "campur";
+type SheetKey = "jubah" | "campur" | "sepatu";
 type Status = "habis" | "menipis" | "tersedia";
 type ColKey =
-  | "merek"
-  | "kode"
-  | "model"
-  | "warna"
-  | "ukuran"
-  | "stokLama"
-  | "masuk"
-  | "terjual"
-  | "stokAkhir"
-  | "hargaBeli"
-  | "hargaJual"
-  | "aset"
-  | "untung";
+  | "merek" | "kode" | "model" | "warna" | "ukuran"
+  | "stokLama" | "masuk" | "terjual" | "stokAkhir"
+  | "hargaBeli" | "hargaJual" | "aset" | "untung";
 type FormKey =
-  | "merek"
-  | "kode"
-  | "model"
-  | "warna"
-  | "ukuran"
-  | "stokLama"
-  | "masuk"
-  | "terjual"
-  | "hargaBeli"
-  | "hargaJual";
+  | "merek" | "kode" | "model" | "warna" | "ukuran"
+  | "stokLama" | "masuk" | "terjual" | "hargaBeli" | "hargaJual";
 
 interface Item {
   row: number; // nomor baris di Google Sheets
@@ -56,27 +38,28 @@ interface Item {
   hargaJual: number;
 }
 type Data = Record<SheetKey, Item[]>;
-type SeedRow = [
-  string,
-  string,
-  string,
-  string,
-  string,
-  number,
-  number,
-  number,
-  number,
-  number
-];
-interface Guide {
+type SeedRow = [string, string, string, string, string, number, number, number, number, number];
+interface Guide { merek: string; head: string[]; rows: string[][]; }
+interface Sale {
+  id: number;
+  tanggal: string; // format YYYY-MM-DD
+  kategori: string;
   merek: string;
-  head: string[];
-  rows: string[][];
+  kode: string;
+  model: string;
+  warna: string;
+  ukuran: string;
+  qty: number;
+  harga: number;
+  total: number;
 }
+
+const KATEGORI: Record<SheetKey, string> = { jubah: "Jubah", campur: "Barang Campur", sepatu: "Sepatu" };
 
 const SHEETS: Record<SheetKey, { label: string; sheetName: string }> = {
   jubah: { label: "Stok Jubah", sheetName: "Stock Jubah" },
   campur: { label: "Stok Barang Campur", sheetName: "Stock Barang Campur" },
+  sepatu: { label: "Stok Sepatu", sheetName: "Stock Sepatu" },
 };
 
 /* =====================================================================
@@ -94,22 +77,10 @@ const GUIDES: Guide[] = [];
 
 const toItems = (rows: SeedRow[]): Item[] =>
   rows.map((r, i) => ({
-    row: i + 2,
-    merek: r[0],
-    kode: r[1],
-    model: r[2],
-    warna: r[3],
-    ukuran: r[4],
-    stokLama: r[5],
-    masuk: r[6],
-    terjual: r[7],
-    hargaBeli: r[8],
-    hargaJual: r[9],
+    row: i + 2, merek: r[0], kode: r[1], model: r[2], warna: r[3], ukuran: r[4],
+    stokLama: r[5], masuk: r[6], terjual: r[7], hargaBeli: r[8], hargaJual: r[9],
   }));
-const seedData = (): Data => ({
-  jubah: toItems(SEED_JUBAH),
-  campur: toItems(SEED_CAMPUR),
-});
+const seedData = (): Data => ({ jubah: toItems(SEED_JUBAH), campur: toItems(SEED_CAMPUR), sepatu: [] });
 
 /* =====================================================================
    HELPER
@@ -117,42 +88,25 @@ const seedData = (): Data => ({
 const stokAkhir = (i: Item) => i.stokLama + i.masuk - i.terjual;
 const rp = (n: number) => "Rp " + Math.round(n).toLocaleString("id-ID");
 const num = (n: number) => n.toLocaleString("id-ID");
+const todayStr = () => {
+  const d = new Date();
+  const dua = (n: number) => (n < 10 ? "0" : "") + n;
+  return d.getFullYear() + "-" + dua(d.getMonth() + 1) + "-" + dua(d.getDate());
+};
+const fmtDate = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s.split("-").reverse().join("/") : s);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const uniq = (a: string[]) =>
-  Array.from(new Set(a.filter(Boolean))).sort((x, y) =>
-    x.localeCompare(y, "id", { numeric: true })
-  );
+const uniq = (a: string[]) => Array.from(new Set(a.filter(Boolean))).sort((x, y) => x.localeCompare(y, "id", { numeric: true }));
 const getStatus = (i: Item, batas: number): Status => {
   const s = stokAkhir(i);
   return s <= 0 ? "habis" : s <= batas ? "menipis" : "tersedia";
 };
-const keyOf = (i: Item) => ({
-  merek: i.merek,
-  kode: i.kode,
-  model: i.model,
-  warna: i.warna,
-  ukuran: i.ukuran,
-});
+const keyOf = (i: Item) => ({ merek: i.merek, kode: i.kode, model: i.model, warna: i.warna, ukuran: i.ukuran });
 const payload = (i: Item) => ({
-  merek: i.merek,
-  kode: i.kode,
-  model: i.model,
-  warna: i.warna,
-  ukuran: i.ukuran,
-  stokLama: i.stokLama,
-  masuk: i.masuk,
-  terjual: i.terjual,
-  hargaBeli: i.hargaBeli,
-  hargaJual: i.hargaJual,
+  merek: i.merek, kode: i.kode, model: i.model, warna: i.warna, ukuran: i.ukuran,
+  stokLama: i.stokLama, masuk: i.masuk, terjual: i.terjual, hargaBeli: i.hargaBeli, hargaJual: i.hargaJual,
 });
 
-const COLS: {
-  key: ColKey;
-  label: string;
-  num: boolean;
-  money?: boolean;
-  get: (i: Item) => string | number;
-}[] = [
+const COLS: { key: ColKey; label: string; num: boolean; money?: boolean; get: (i: Item) => string | number }[] = [
   { key: "merek", label: "Merek", num: false, get: (i) => i.merek },
   { key: "kode", label: "Kode", num: false, get: (i) => i.kode },
   { key: "model", label: "Model", num: false, get: (i) => i.model },
@@ -162,42 +116,13 @@ const COLS: {
   { key: "masuk", label: "Masuk", num: true, get: (i) => i.masuk },
   { key: "terjual", label: "Terjual", num: true, get: (i) => i.terjual },
   { key: "stokAkhir", label: "Stok Akhir", num: true, get: stokAkhir },
-  {
-    key: "hargaBeli",
-    label: "Harga Beli",
-    num: true,
-    money: true,
-    get: (i) => i.hargaBeli,
-  },
-  {
-    key: "hargaJual",
-    label: "Harga Jual",
-    num: true,
-    money: true,
-    get: (i) => i.hargaJual,
-  },
-  {
-    key: "aset",
-    label: "Total Aset",
-    num: true,
-    money: true,
-    get: (i) => Math.max(stokAkhir(i), 0) * i.hargaBeli,
-  },
-  {
-    key: "untung",
-    label: "Untung/Pcs",
-    num: true,
-    money: true,
-    get: (i) => i.hargaJual - i.hargaBeli,
-  },
+  { key: "hargaBeli", label: "Harga Beli", num: true, money: true, get: (i) => i.hargaBeli },
+  { key: "hargaJual", label: "Harga Jual", num: true, money: true, get: (i) => i.hargaJual },
+  { key: "aset", label: "Total Aset", num: true, money: true, get: (i) => Math.max(stokAkhir(i), 0) * i.hargaBeli },
+  { key: "untung", label: "Untung/Pcs", num: true, money: true, get: (i) => i.hargaJual - i.hargaBeli },
 ];
 
-const FORM_FIELDS: {
-  key: FormKey;
-  label: string;
-  num: boolean;
-  list?: string;
-}[] = [
+const FORM_FIELDS: { key: FormKey; label: string; num: boolean; list?: string }[] = [
   { key: "merek", label: "Merek *", num: false, list: "dl-merek" },
   { key: "kode", label: "Kode", num: false },
   { key: "model", label: "Model", num: false, list: "dl-model" },
@@ -213,19 +138,22 @@ const FORM_FIELDS: {
 /* =====================================================================
    API APPS SCRIPT
    ===================================================================== */
-async function apiList(): Promise<Data> {
-  const url = `${API_URL}?action=list${
-    API_TOKEN ? `&token=${encodeURIComponent(API_TOKEN)}` : ""
-  }`;
+async function apiList(): Promise<{ data: Data; sales: Sale[] }> {
+  const url = `${API_URL}?action=list${API_TOKEN ? `&token=${encodeURIComponent(API_TOKEN)}` : ""}`;
   const res = await fetch(url);
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || "Gagal memuat data");
-  return { jubah: json.jubah as Item[], campur: json.campur as Item[] };
+  return {
+    data: {
+      jubah: json.jubah as Item[],
+      campur: json.campur as Item[],
+      sepatu: (json.sepatu ?? []) as Item[],
+    },
+    sales: (json.penjualan ?? []) as Sale[],
+  };
 }
 
-async function apiPost(
-  body: Record<string, unknown>
-): Promise<{ item?: Item }> {
+async function apiPost(body: Record<string, unknown>): Promise<{ item?: Item; sale?: Sale }> {
   // text/plain agar browser tidak mengirim preflight CORS (Apps Script tidak mendukung OPTIONS)
   const res = await fetch(API_URL, {
     method: "POST",
@@ -240,12 +168,7 @@ async function apiPost(
 /* =====================================================================
    KOMPONEN
    ===================================================================== */
-function Card(props: {
-  label: string;
-  value: string;
-  note?: string;
-  warn?: boolean;
-}) {
+function Card(props: { label: string; value: string; note?: string; warn?: boolean }) {
   return (
     <div className={"card" + (props.warn ? " warn" : "")}>
       <div className="cl">{props.label}</div>
@@ -255,24 +178,96 @@ function Card(props: {
   );
 }
 
+function Riwayat({ sales }: { sales: Sale[] }) {
+  const [bulan, setBulan] = useState("");
+  const [k, setK] = useState("");
+  const rows = useMemo(() => {
+    const key = k.trim().toLowerCase();
+    return sales
+      .filter(
+        (s) =>
+          (!bulan || s.tanggal.startsWith(bulan)) &&
+          (!key || [s.kategori, s.merek, s.kode, s.model, s.warna, s.ukuran].join(" ").toLowerCase().includes(key))
+      )
+      .sort((a, b) => (a.tanggal === b.tanggal ? b.id - a.id : a.tanggal < b.tanggal ? 1 : -1));
+  }, [sales, bulan, k]);
+  const pcs = rows.reduce((a, s) => a + s.qty, 0);
+  const omzet = rows.reduce((a, s) => a + s.total, 0);
+  return (
+    <>
+      <section className="cards">
+        <Card label="Transaksi" value={num(rows.length)} />
+        <Card label="Barang terjual" value={`${num(pcs)} pcs`} />
+        <Card label="Total penjualan" value={rp(omzet)} />
+      </section>
+      <section className="bar">
+        <input className="in search" placeholder="Cari merek, kode, model, warna, ukuran…" value={k} onChange={(e) => setK(e.target.value)} />
+        <label className="lim">
+          Bulan
+          <input className="in" style={{ marginLeft: 6 }} type="month" value={bulan} onChange={(e) => setBulan(e.target.value)} />
+        </label>
+        {(bulan || k) && (
+          <button className="btn" onClick={() => { setBulan(""); setK(""); }}>Reset filter</button>
+        )}
+      </section>
+      <div className="wrap">
+        <table className="tbl" style={{ minWidth: 900 }}>
+          <thead>
+            <tr>
+              <th>Tanggal</th><th>Kategori</th><th>Merek</th><th>Kode</th><th>Model</th><th>Warna</th><th>Ukuran</th>
+              <th className="r">Jumlah</th><th className="r">Harga Jual</th><th className="r">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.id}>
+                <td>{fmtDate(s.tanggal)}</td><td>{s.kategori}</td><td>{s.merek}</td><td>{s.kode}</td><td>{s.model}</td>
+                <td>{s.warna}</td><td>{s.ukuran}</td>
+                <td className="r">{num(s.qty)}</td><td className="r">{rp(s.harga)}</td><td className="r">{rp(s.total)}</td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={10} className="empty">
+                  {sales.length === 0 ? "Belum ada penjualan tercatat. Klik tombol Jual pada barang untuk mencatat." : "Tidak ada penjualan yang cocok."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState<Data>(() => {
-    if (API_URL) return { jubah: [], campur: [] };
+    if (API_URL) return { jubah: [], campur: [], sepatu: [] };
     try {
       const s = localStorage.getItem(STORAGE_KEY);
-      if (s) return JSON.parse(s) as Data;
+      if (s) return { ...seedData(), ...(JSON.parse(s) as Partial<Data>) };
     } catch {
       /* abaikan, pakai data awal */
     }
     return seedData();
   });
   const [tab, setTab] = useState<SheetKey>("jubah");
+  const [view, setView] = useState<"stok" | "riwayat">("stok");
+  const [sales, setSales] = useState<Sale[]>(() => {
+    if (API_URL) return [];
+    try {
+      const s = localStorage.getItem(STORAGE_KEY + "-sales");
+      if (s) return JSON.parse(s) as Sale[];
+    } catch {
+      /* abaikan */
+    }
+    return [];
+  });
+  const [sell, setSell] = useState<{ item: Item; tanggal: string; qty: string; harga: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(
-    null
-  );
+  const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
 
   const [q, setQ] = useState("");
   const [fMerek, setFMerek] = useState("");
@@ -280,11 +275,7 @@ export default function App() {
   const [fStatus, setFStatus] = useState<"" | Status>("");
   const [batas, setBatas] = useState(1);
   const [sort, setSort] = useState<{ key: ColKey; dir: 1 | -1 } | null>(null);
-  const [form, setForm] = useState<{
-    mode: "add" | "edit";
-    row: number;
-    v: Record<FormKey, string>;
-  } | null>(null);
+  const [form, setForm] = useState<{ mode: "add" | "edit"; row: number; v: Record<FormKey, string> } | null>(null);
 
   const flash = (text: string, bad = false) => {
     setToast({ text, bad });
@@ -296,7 +287,9 @@ export default function App() {
     setLoading(true);
     setError("");
     try {
-      setData(await apiList());
+      const r = await apiList();
+      setData(r.data);
+      setSales(r.sales);
     } catch (e) {
       setError("Tidak bisa memuat dari Google Sheets: " + errMsg(e));
     } finally {
@@ -304,26 +297,21 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    reload();
-  }, [reload]);
+  useEffect(() => { reload(); }, [reload]);
 
   useEffect(() => {
     if (API_URL) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch {
-      /* abaikan */
-    }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* abaikan */ }
   }, [data]);
 
   useEffect(() => {
-    setQ("");
-    setFMerek("");
-    setFUkuran("");
-    setFStatus("");
-    setSort(null);
+    setQ(""); setFMerek(""); setFUkuran(""); setFStatus(""); setSort(null);
   }, [tab]);
+
+  useEffect(() => {
+    if (API_URL) return;
+    try { localStorage.setItem(STORAGE_KEY + "-sales", JSON.stringify(sales)); } catch { /* abaikan */ }
+  }, [sales]);
 
   const list = data[tab];
   const mereks = useMemo(() => uniq(list.map((i) => i.merek)), [list]);
@@ -333,11 +321,7 @@ export default function App() {
     const k = q.trim().toLowerCase();
     let r = list.filter(
       (i) =>
-        (!k ||
-          [i.merek, i.kode, i.model, i.warna, i.ukuran]
-            .join(" ")
-            .toLowerCase()
-            .includes(k)) &&
+        (!k || [i.merek, i.kode, i.model, i.warna, i.ukuran].join(" ").toLowerCase().includes(k)) &&
         (!fMerek || i.merek === fMerek) &&
         (!fUkuran || i.ukuran === fUkuran) &&
         (!fStatus || getStatus(i, batas) === fStatus)
@@ -345,12 +329,8 @@ export default function App() {
     if (sort) {
       const col = COLS.find((c) => c.key === sort.key)!;
       r = [...r].sort((a, b) => {
-        const x = col.get(a),
-          y = col.get(b);
-        const d =
-          typeof x === "number" && typeof y === "number"
-            ? x - y
-            : String(x).localeCompare(String(y), "id", { numeric: true });
+        const x = col.get(a), y = col.get(b);
+        const d = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "id", { numeric: true });
         return d * sort.dir;
       });
     }
@@ -385,12 +365,7 @@ export default function App() {
       return { ...d, [sheet]: next };
     });
 
-  const save = async (
-    sheet: SheetKey,
-    item: Item,
-    isNew: boolean,
-    orig?: Item
-  ): Promise<boolean> => {
+  const save = async (sheet: SheetKey, item: Item, isNew: boolean, orig?: Item): Promise<boolean> => {
     setBusy(true);
     try {
       if (API_URL) {
@@ -421,13 +396,7 @@ export default function App() {
     if (!window.confirm(`Hapus "${nama}"?${info}`)) return;
     setBusy(true);
     try {
-      if (API_URL)
-        await apiPost({
-          action: "delete",
-          sheet: tab,
-          row: i.row,
-          check: keyOf(i),
-        });
+      if (API_URL) await apiPost({ action: "delete", sheet: tab, row: i.row, check: keyOf(i) });
       setData((d) => ({ ...d, [tab]: d[tab].filter((x) => x.row !== i.row) }));
       flash("Barang dihapus");
     } catch (e) {
@@ -438,8 +407,7 @@ export default function App() {
   };
 
   const quick = async (i: Item, field: "masuk" | "terjual") => {
-    if (field === "terjual" && stokAkhir(i) <= 0)
-      return flash("Stok sudah habis", true);
+    if (field === "terjual" && stokAkhir(i) <= 0) return flash("Stok sudah habis", true);
     const ok = await save(tab, { ...i, [field]: i[field] + 1 }, false, i);
     if (ok) flash(field === "masuk" ? "Barang masuk +1" : "Terjual +1");
   };
@@ -449,18 +417,7 @@ export default function App() {
     setForm({
       mode: "add",
       row: 0,
-      v: {
-        merek: "",
-        kode: "",
-        model: "",
-        warna: "",
-        ukuran: "",
-        stokLama: "0",
-        masuk: "0",
-        terjual: "0",
-        hargaBeli: "0",
-        hargaJual: "0",
-      },
+      v: { merek: "", kode: "", model: "", warna: "", ukuran: "", stokLama: "0", masuk: "0", terjual: "0", hargaBeli: "0", hargaJual: "0" },
     });
 
   const openEdit = (i: Item) =>
@@ -468,49 +425,28 @@ export default function App() {
       mode: "edit",
       row: i.row,
       v: {
-        merek: i.merek,
-        kode: i.kode,
-        model: i.model,
-        warna: i.warna,
-        ukuran: i.ukuran,
-        stokLama: String(i.stokLama),
-        masuk: String(i.masuk),
-        terjual: String(i.terjual),
-        hargaBeli: String(i.hargaBeli),
-        hargaJual: String(i.hargaJual),
+        merek: i.merek, kode: i.kode, model: i.model, warna: i.warna, ukuran: i.ukuran,
+        stokLama: String(i.stokLama), masuk: String(i.masuk), terjual: String(i.terjual),
+        hargaBeli: String(i.hargaBeli), hargaJual: String(i.hargaJual),
       },
     });
 
-  const setField = (k: FormKey, val: string) =>
-    setForm((f) => (f ? { ...f, v: { ...f.v, [k]: val } } : f));
+  const setField = (k: FormKey, val: string) => setForm((f) => (f ? { ...f, v: { ...f.v, [k]: val } } : f));
 
   const submit = async () => {
     if (!form) return;
     const v = form.v;
     if (!v.merek.trim()) return flash("Merek wajib diisi", true);
-    if (tab === "campur" && !v.kode.trim())
-      return flash("Kode wajib diisi untuk barang campur", true);
+    if (tab === "campur" && !v.kode.trim()) return flash("Kode wajib diisi untuk barang campur", true);
     const n = (s: string) => (s.trim() === "" ? 0 : Number(s));
-    const nums = [v.stokLama, v.masuk, v.terjual, v.hargaBeli, v.hargaJual].map(
-      n
-    );
-    if (nums.some((x) => !Number.isFinite(x) || x < 0))
-      return flash("Angka tidak boleh kosong/negatif", true);
+    const nums = [v.stokLama, v.masuk, v.terjual, v.hargaBeli, v.hargaJual].map(n);
+    if (nums.some((x) => !Number.isFinite(x) || x < 0)) return flash("Angka tidak boleh kosong/negatif", true);
     const item: Item = {
       row: form.row,
-      merek: v.merek.trim(),
-      kode: v.kode.trim(),
-      model: v.model.trim(),
-      warna: v.warna.trim(),
-      ukuran: v.ukuran.trim(),
-      stokLama: nums[0],
-      masuk: nums[1],
-      terjual: nums[2],
-      hargaBeli: nums[3],
-      hargaJual: nums[4],
+      merek: v.merek.trim(), kode: v.kode.trim(), model: v.model.trim(), warna: v.warna.trim(), ukuran: v.ukuran.trim(),
+      stokLama: nums[0], masuk: nums[1], terjual: nums[2], hargaBeli: nums[3], hargaJual: nums[4],
     };
-    const orig =
-      form.mode === "edit" ? list.find((x) => x.row === form.row) : undefined;
+    const orig = form.mode === "edit" ? list.find((x) => x.row === form.row) : undefined;
     const ok = await save(tab, item, form.mode === "add", orig);
     if (ok) {
       flash(form.mode === "add" ? "Barang ditambahkan" : "Perubahan disimpan");
@@ -518,28 +454,56 @@ export default function App() {
     }
   };
 
+  const submitSell = async () => {
+    if (!sell) return;
+    const it = sell.item;
+    const qty = Number(sell.qty);
+    const harga = Number(sell.harga);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sell.tanggal)) return flash("Tanggal wajib diisi", true);
+    if (!Number.isInteger(qty) || qty < 1) return flash("Jumlah minimal 1", true);
+    if (qty > stokAkhir(it)) return flash(`Stok hanya ${stokAkhir(it)}`, true);
+    if (!Number.isFinite(harga) || harga < 0) return flash("Harga jual tidak valid", true);
+    setBusy(true);
+    try {
+      if (API_URL) {
+        const res = await apiPost({
+          action: "sell", sheet: tab, row: it.row, check: keyOf(it),
+          qty, date: sell.tanggal, price: harga,
+        });
+        const sale = res.sale;
+        if (res.item) upsert(tab, res.item);
+        if (sale) setSales((s) => [...s, sale]);
+      } else {
+        upsert(tab, { ...it, terjual: it.terjual + qty });
+        setSales((s) => [
+          ...s,
+          {
+            id: Date.now(), tanggal: sell.tanggal, kategori: KATEGORI[tab],
+            merek: it.merek, kode: it.kode, model: it.model, warna: it.warna, ukuran: it.ukuran,
+            qty, harga, total: qty * harga,
+          },
+        ]);
+      }
+      flash("Penjualan dicatat");
+      setSell(null);
+    } catch (e) {
+      flash(errMsg(e), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleSort = (key: ColKey) =>
-    setSort((s) =>
-      !s || s.key !== key
-        ? { key, dir: 1 }
-        : s.dir === 1
-        ? { key, dir: -1 }
-        : null
-    );
+    setSort((s) => (!s || s.key !== key ? { key, dir: 1 } : s.dir === 1 ? { key, dir: -1 } : null));
 
   const exportCsv = () => {
     const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
     const head = COLS.map((c) => esc(c.label)).join(";");
-    const body = rows
-      .map((i) => COLS.map((c) => esc(c.get(i))).join(";"))
-      .join("\n");
-    const blob = new Blob(["\ufeff" + head + "\n" + body], {
-      type: "text/csv;charset=utf-8",
-    });
+    const body = rows.map((i) => COLS.map((c) => esc(c.get(i))).join(";")).join("\n");
+    const blob = new Blob(["\ufeff" + head + "\n" + body], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download =
-      SHEETS[tab].sheetName.replace(/\s+/g, "-").toLowerCase() + ".csv";
+    a.download = SHEETS[tab].sheetName.replace(/\s+/g, "-").toLowerCase() + ".csv";
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -552,9 +516,7 @@ export default function App() {
   };
 
   const preview = form
-    ? (Number(form.v.stokLama) || 0) +
-      (Number(form.v.masuk) || 0) -
-      (Number(form.v.terjual) || 0)
+    ? (Number(form.v.stokLama) || 0) + (Number(form.v.masuk) || 0) - (Number(form.v.terjual) || 0)
     : 0;
 
   /* ---------- tampilan ---------- */
@@ -566,27 +528,21 @@ export default function App() {
         <div>
           <h1>Stok Barang</h1>
           <p className="sub">
-            {API_URL
-              ? "Tersambung ke Google Sheets"
-              : "Mode lokal: belum tersambung ke Google Sheets (isi API_URL di App.tsx)"}
+            {API_URL ? "Tersambung ke Google Sheets" : "Mode lokal: belum tersambung ke Google Sheets (isi API_URL di App.tsx)"}
           </p>
         </div>
         <div className="actions">
           {API_URL ? (
-            <button className="btn" onClick={reload} disabled={loading || busy}>
-              {loading ? "Memuat…" : "Muat ulang"}
-            </button>
+            <button className="btn" onClick={reload} disabled={loading || busy}>{loading ? "Memuat…" : "Muat ulang"}</button>
           ) : (
-            <button className="btn" onClick={resetLocal}>
-              Hapus data lokal
-            </button>
+            <button className="btn" onClick={resetLocal}>Hapus data lokal</button>
           )}
-          <button className="btn" onClick={exportCsv}>
-            Ekspor CSV
-          </button>
-          <button className="btn primary" onClick={openAdd}>
-            + Tambah barang
-          </button>
+          {view === "stok" && (
+            <>
+              <button className="btn" onClick={exportCsv}>Ekspor CSV</button>
+              <button className="btn primary" onClick={openAdd}>+ Tambah barang</button>
+            </>
+          )}
         </div>
       </header>
 
@@ -596,74 +552,40 @@ export default function App() {
         {(Object.keys(SHEETS) as SheetKey[]).map((k) => (
           <button
             key={k}
-            className={"tab" + (tab === k ? " on" : "")}
-            onClick={() => setTab(k)}
+            className={"tab" + (view === "stok" && tab === k ? " on" : "")}
+            onClick={() => { setTab(k); setView("stok"); }}
           >
             {SHEETS[k].label} <span className="pill">{data[k].length}</span>
           </button>
         ))}
+        <button className={"tab" + (view === "riwayat" ? " on" : "")} onClick={() => setView("riwayat")}>
+          Riwayat Penjualan <span className="pill">{sales.length}</span>
+        </button>
       </nav>
 
+      {view === "riwayat" && <Riwayat sales={sales} />}
+
+      {view === "stok" && (
+        <>
       <section className="cards">
-        <Card
-          label="Jenis barang"
-          value={num(rows.length)}
-          note={
-            rows.length !== list.length
-              ? `dari ${num(list.length)} baris`
-              : "baris data"
-          }
-        />
+        <Card label="Jenis barang" value={num(rows.length)} note={rows.length !== list.length ? `dari ${num(list.length)} baris` : "baris data"} />
         <Card label="Total stok" value={`${num(sum.pcs)} pcs`} />
         <Card label="Nilai aset (modal)" value={rp(sum.aset)} />
-        <Card
-          label="Potensi untung"
-          value={rp(sum.untung)}
-          note="jika semua stok terjual"
-        />
-        <Card
-          label="Perlu perhatian"
-          value={`${sum.habis} habis · ${sum.menipis} menipis`}
-          warn={sum.habis + sum.menipis > 0}
-        />
+        <Card label="Potensi untung" value={rp(sum.untung)} note="jika semua stok terjual" />
+        <Card label="Perlu perhatian" value={`${sum.habis} habis · ${sum.menipis} menipis`} warn={sum.habis + sum.menipis > 0} />
       </section>
 
       <section className="bar">
-        <input
-          className="in search"
-          placeholder="Cari merek, kode, model, warna, ukuran…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <select
-          className="in"
-          value={fMerek}
-          onChange={(e) => setFMerek(e.target.value)}
-        >
+        <input className="in search" placeholder="Cari merek, kode, model, warna, ukuran…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className="in" value={fMerek} onChange={(e) => setFMerek(e.target.value)}>
           <option value="">Semua merek</option>
-          {mereks.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
+          {mereks.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-        <select
-          className="in"
-          value={fUkuran}
-          onChange={(e) => setFUkuran(e.target.value)}
-        >
+        <select className="in" value={fUkuran} onChange={(e) => setFUkuran(e.target.value)}>
           <option value="">Semua ukuran</option>
-          {ukurans.map((u) => (
-            <option key={u} value={u}>
-              {u}
-            </option>
-          ))}
+          {ukurans.map((u) => <option key={u} value={u}>{u}</option>)}
         </select>
-        <select
-          className="in"
-          value={fStatus}
-          onChange={(e) => setFStatus(e.target.value as "" | Status)}
-        >
+        <select className="in" value={fStatus} onChange={(e) => setFStatus(e.target.value as "" | Status)}>
           <option value="">Semua status</option>
           <option value="tersedia">Tersedia</option>
           <option value="menipis">Menipis</option>
@@ -671,33 +593,19 @@ export default function App() {
         </select>
         <label className="lim">
           Menipis jika stok ≤
-          <input
-            className="in sm"
-            type="number"
-            min={0}
-            value={batas}
-            onChange={(e) => setBatas(Math.max(0, Number(e.target.value) || 0))}
-          />
+          <input className="in sm" type="number" min={0} value={batas} onChange={(e) => setBatas(Math.max(0, Number(e.target.value) || 0))} />
         </label>
       </section>
 
       <div className="wrap">
-        {loading && (
-          <div className="loading">Memuat data dari Google Sheets…</div>
-        )}
+        {loading && <div className="loading">Memuat data dari Google Sheets…</div>}
         <table className="tbl">
           <thead>
             <tr>
               {COLS.map((c) => (
-                <th
-                  key={c.key}
-                  className={c.num ? "r" : ""}
-                  onClick={() => toggleSort(c.key)}
-                >
+                <th key={c.key} className={c.num ? "r" : ""} onClick={() => toggleSort(c.key)}>
                   {c.label}
-                  <span className="arr">
-                    {sort?.key === c.key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
-                  </span>
+                  <span className="arr">{sort?.key === c.key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}</span>
                 </th>
               ))}
               <th>Aksi</th>
@@ -713,52 +621,20 @@ export default function App() {
                     if (c.key === "stokAkhir")
                       return (
                         <td key={c.key} className="r">
-                          <span className={"badge " + st}>
-                            {num(Number(v))}
-                          </span>
+                          <span className={"badge " + st}>{num(Number(v))}</span>
                         </td>
                       );
                     return (
                       <td key={c.key} className={c.num ? "r" : ""}>
-                        {c.money
-                          ? rp(Number(v))
-                          : c.num
-                          ? num(Number(v))
-                          : String(v)}
+                        {c.money ? rp(Number(v)) : c.num ? num(Number(v)) : String(v)}
                       </td>
                     );
                   })}
                   <td className="act">
-                    <button
-                      className="mini"
-                      disabled={busy}
-                      onClick={() => quick(i, "masuk")}
-                      title="Tambah barang masuk 1"
-                    >
-                      + Masuk
-                    </button>
-                    <button
-                      className="mini"
-                      disabled={busy || stokAkhir(i) <= 0}
-                      onClick={() => quick(i, "terjual")}
-                      title="Catat terjual 1"
-                    >
-                      Jual
-                    </button>
-                    <button
-                      className="mini"
-                      disabled={busy}
-                      onClick={() => openEdit(i)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className="mini danger"
-                      disabled={busy}
-                      onClick={() => remove(i)}
-                    >
-                      Hapus
-                    </button>
+                    <button className="mini" disabled={busy} onClick={() => quick(i, "masuk")} title="Tambah barang masuk 1">+ Masuk</button>
+                    <button className="mini" disabled={busy || stokAkhir(i) <= 0} onClick={() => setSell({ item: i, tanggal: todayStr(), qty: "1", harga: String(i.hargaJual) })} title="Catat penjualan beserta tanggal">Jual</button>
+                    <button className="mini" disabled={busy} onClick={() => openEdit(i)}>Edit</button>
+                    <button className="mini danger" disabled={busy} onClick={() => remove(i)}>Hapus</button>
                   </td>
                 </tr>
               );
@@ -787,19 +663,11 @@ export default function App() {
                 <h3>{g.merek}</h3>
                 <table className="gt">
                   <thead>
-                    <tr>
-                      {g.head.map((h) => (
-                        <th key={h}>{h}</th>
-                      ))}
-                    </tr>
+                    <tr>{g.head.map((h) => <th key={h}>{h}</th>)}</tr>
                   </thead>
                   <tbody>
                     {g.rows.map((r, ri) => (
-                      <tr key={ri}>
-                        {r.map((c, ci) => (
-                          <td key={ci}>{c}</td>
-                        ))}
-                      </tr>
+                      <tr key={ri}>{r.map((c, ci) => <td key={ci}>{c}</td>)}</tr>
                     ))}
                   </tbody>
                 </table>
@@ -809,39 +677,18 @@ export default function App() {
         </details>
       )}
 
-      <datalist id="dl-merek">
-        {mereks.map((v) => (
-          <option key={v} value={v} />
-        ))}
-      </datalist>
-      <datalist id="dl-model">
-        {uniq(list.map((i) => i.model)).map((v) => (
-          <option key={v} value={v} />
-        ))}
-      </datalist>
-      <datalist id="dl-warna">
-        {uniq(list.map((i) => i.warna)).map((v) => (
-          <option key={v} value={v} />
-        ))}
-      </datalist>
-      <datalist id="dl-ukuran">
-        {ukurans.map((v) => (
-          <option key={v} value={v} />
-        ))}
-      </datalist>
+        </>
+      )}
+
+      <datalist id="dl-merek">{mereks.map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-model">{uniq(list.map((i) => i.model)).map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-warna">{uniq(list.map((i) => i.warna)).map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-ukuran">{ukurans.map((v) => <option key={v} value={v} />)}</datalist>
 
       {form && (
-        <div
-          className="ov"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setForm(null);
-          }}
-        >
+        <div className="ov" onMouseDown={(e) => { if (e.target === e.currentTarget) setForm(null); }}>
           <div className="modal" role="dialog" aria-modal="true">
-            <h2>
-              {form.mode === "add" ? "Tambah barang" : "Edit barang"} ·{" "}
-              {SHEETS[tab].label}
-            </h2>
+            <h2>{form.mode === "add" ? "Tambah barang" : "Edit barang"} · {SHEETS[tab].label}</h2>
             <div className="grid">
               {FORM_FIELDS.map((f) => (
                 <label key={f.key}>
@@ -858,33 +705,57 @@ export default function App() {
               ))}
             </div>
             <p className="calc">
-              Stok akhir (otomatis): <b>{num(preview)}</b> · Total aset:{" "}
-              <b>
-                {rp(Math.max(preview, 0) * (Number(form.v.hargaBeli) || 0))}
-              </b>
+              Stok akhir (otomatis): <b>{num(preview)}</b> · Total aset: <b>{rp(Math.max(preview, 0) * (Number(form.v.hargaBeli) || 0))}</b>
+            </p>
+            <p className="hint">
+              Untuk mencatat penjualan beserta tanggalnya, gunakan tombol Jual di tabel. Mengubah angka Terjual di sini tidak masuk ke Riwayat Penjualan.
             </p>
             {API_URL && (
               <p className="hint">
-                Jika kolom Barang Masuk/Terjual di sheet berisi rumus (dari
-                sheet Transaksi), perubahan disimpan sebagai penyesuaian +/− di
-                akhir rumus, jadi rumusnya tidak hilang.
+                Jika kolom Barang Masuk/Terjual di sheet berisi rumus (dari sheet Transaksi), perubahan disimpan sebagai
+                penyesuaian +/− di akhir rumus, jadi rumusnya tidak hilang.
               </p>
             )}
             <div className="mact">
-              <button className="btn" onClick={() => setForm(null)}>
-                Batal
-              </button>
-              <button className="btn primary" disabled={busy} onClick={submit}>
-                {busy ? "Menyimpan…" : "Simpan"}
-              </button>
+              <button className="btn" onClick={() => setForm(null)}>Batal</button>
+              <button className="btn primary" disabled={busy} onClick={submit}>{busy ? "Menyimpan…" : "Simpan"}</button>
             </div>
           </div>
         </div>
       )}
 
-      {toast && (
-        <div className={"toast" + (toast.bad ? " bad" : "")}>{toast.text}</div>
+      {sell && (
+        <div className="ov" onMouseDown={(e) => { if (e.target === e.currentTarget) setSell(null); }}>
+          <div className="modal" role="dialog" aria-modal="true" style={{ maxWidth: 460 }}>
+            <h2>Catat penjualan</h2>
+            <p className="sub" style={{ marginTop: -6, marginBottom: 12 }}>
+              {[sell.item.merek, sell.item.kode, sell.item.model, sell.item.warna, sell.item.ukuran].filter(Boolean).join(" ")}
+              {" · "}stok {num(stokAkhir(sell.item))}
+            </p>
+            <div className="grid">
+              <label>
+                Tanggal terjual
+                <input className="in" type="date" value={sell.tanggal} onChange={(e) => setSell({ ...sell, tanggal: e.target.value })} />
+              </label>
+              <label>
+                Jumlah
+                <input className="in" type="number" min={1} max={stokAkhir(sell.item)} value={sell.qty} onChange={(e) => setSell({ ...sell, qty: e.target.value })} />
+              </label>
+              <label>
+                Harga jual satuan (Rp)
+                <input className="in" type="number" min={0} value={sell.harga} onChange={(e) => setSell({ ...sell, harga: e.target.value })} />
+              </label>
+            </div>
+            <p className="calc">Total: <b>{rp((Number(sell.qty) || 0) * (Number(sell.harga) || 0))}</b></p>
+            <div className="mact">
+              <button className="btn" onClick={() => setSell(null)}>Batal</button>
+              <button className="btn primary" disabled={busy} onClick={submitSell}>{busy ? "Menyimpan…" : "Simpan penjualan"}</button>
+            </div>
+          </div>
+        </div>
       )}
+
+      {toast && <div className={"toast" + (toast.bad ? " bad" : "")}>{toast.text}</div>}
     </div>
   );
 }
